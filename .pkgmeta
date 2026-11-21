@@ -1,0 +1,10 @@
+package-as: HealAssist
+
+move-folders:
+  HealAssist/HealAssist: HealAssist
+
+ignore:
+  - tests
+  - tools
+  - README.md
+  - CHANGELOG.md
