@@ -194,7 +194,7 @@ end
 -- 1) alone (no Command Center)
 _G.CommandCenter = nil
 local S = {}
-load(S, "Host.lua"); load(S, "UI.lua"); load(S, "HealAssist.lua")
+load(S, "Host.lua"); load(S, "UI.lua"); load(S, "Changelog.lua"); load(S, "News.lua"); load(S, "HealAssist.lua")
 check(S.yield == false, "standalone runs when Command Center isn't there")
 check(S.UI and S.UI.Window, "UI kit loaded")
 check(S.HEALASSIST_SPELLS ~= nil and S.HEALASSIST_REV, "HealAssist loaded (rev " .. tostring(S.HEALASSIST_REV) .. ")")
@@ -205,6 +205,26 @@ event(S, "PLAYER_LOGIN")
 check(_G.CC_HealAssistGroup ~= nil, "healing frames built at login")
 check(S.db.global.healAssist ~= nil, "settings stored under HealAssistDB.global.healAssist")
 check(S.MinimapButton ~= nil, "minimap button made")
+-- What's new
+check(S.Changelog and S.Changelog[1].v == "next", "patch notes loaded, \"next\" on top")
+check(_G.HealAssist_News ~= nil and _G.HealAssist_News:IsShown(), "first login opens What's new")
+check(S.db.global.newsSeen == "1.0.0", "remembers the version it showed")
+_G.HealAssist_News:Hide()
+S.News.AfterLogin()
+check(not _G.HealAssist_News:IsShown(), "not again on the next login")
+S.db.global.newsSeen = "0.9.0"
+S.News.AfterLogin()
+check(_G.HealAssist_News:IsShown(), "opens again after an update")
+check(S.News.Newer("1.0.10", "1.0.9") and not S.News.Newer("1.0.0", "1.0.0") and S.News.Newer("1.1.0", "1.0.99"), "version compare")
+S.News.OnMessage("HealAssist", "V:1.0.5", "GUILD")
+check(S.db.global.newestSeen == "1.0.5", "hears about a newer version from guild / group")
+S.News.OnMessage("HealAssist", "V:0.5.0", "GUILD")
+check(S.db.global.newestSeen == "1.0.5", "an older version doesn't count")
+_G.HealAssist_News:Hide()
+SlashCmdList.HEALASSIST("news")
+check(_G.HealAssist_News:IsShown(), "/healassist news opens the patch notes")
+SlashCmdList.HEALASSIST("newsoff")
+check(S.db.global.newsOff == true, "/healassist newsoff")
 check(SlashCmdList.HEALASSIST ~= nil and SLASH_HEALASSIST1 == "/healassist", "/healassist registered")
 SlashCmdList.HEALASSIST("")
 check(_G.CC_HealAssist ~= nil and _G.CC_HealAssist:IsShown(), "/healassist opens the settings window")
@@ -225,9 +245,9 @@ _G.CommandCenter = { HEALASSIST_SPELLS = {}, commands = { { cmd = "heal", fn = f
   Print = function() end, ShowHealAssist = function() ranCC = "show" end }
 _G.CC_HealAssistGroup = nil
 local S2 = {}
-load(S2, "Host.lua"); load(S2, "UI.lua"); load(S2, "HealAssist.lua")
+load(S2, "Host.lua"); load(S2, "UI.lua"); load(S2, "Changelog.lua"); load(S2, "News.lua"); load(S2, "HealAssist.lua")
 check(S2.yield == true, "steps aside when Command Center has HealAssist")
-check(S2.UI == nil and S2.HEALASSIST_SPELLS == nil, "UI kit and HealAssist don't run twice")
+check(S2.UI == nil and S2.HEALASSIST_SPELLS == nil and S2.News == nil, "UI kit, patch notes and HealAssist don't run twice")
 check(_G.CC_HealAssistGroup == nil, "no second set of frames")
 SlashCmdList.HEALASSIST("ladder"); check(ranCC == "ladder", "/healassist forwards to /ccenter heal")
 SlashCmdList.HEALASSIST(""); check(ranCC == "show", "/healassist opens Command Center's HealAssist")

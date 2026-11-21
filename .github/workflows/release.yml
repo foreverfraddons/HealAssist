@@ -1,0 +1,114 @@
+# Release: when the addon changed since the last tag and the patch notes ("next" in
+# HealAssist/Changelog.lua) hold at least MIN_CHANGES changes, bump the version in HealAssist.toc,
+# stamp the patch notes, tag, package with the BigWigsMods packager and upload to CurseForge
+# (when CF_PROJECT_ID is set) and to a GitHub release.
+name: Release
+
+on:
+  schedule:
+    - cron: "19 11 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Release now (even with fewer than MIN_CHANGES changes, or none)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# CurseForge release type: beta unless the repo variable RELEASE_TYPE says "release" (or "alpha").
+# The packager reads it from the tag: v1.2.3-beta is a beta, v1.2.3 a release. The addon's own
+# version (HealAssist.toc / the patch notes) stays plain 1.2.3.
+env:
+  RELEASE_TYPE: ${{ vars.RELEASE_TYPE || 'beta' }}
+  # a CurseForge update only once the patch notes hold this many different changes (several tries
+  # at one fix are one line there); the repo variable MIN_CHANGES changes it
+  MIN_CHANGES: ${{ vars.MIN_CHANGES || '3' }}
+
+concurrency:
+  group: repo-write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Anything new?
+        id: check
+        run: |
+          if [ -z "${{ vars.CF_PROJECT_ID }}" ]; then
+            echo "::warning::Repo variable CF_PROJECT_ID isn't set yet - no release until CurseForge is set up."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          LAST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          if [ -z "$LAST" ] || [ "${{ inputs.force }}" = "true" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --quiet "$LAST" HEAD -- HealAssist; then
+            echo "Nothing changed since $LAST."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          N=$(python3 tools/changelog.py count)
+          if [ "$N" -lt "$MIN_CHANGES" ]; then
+            echo "$N of $MIN_CHANGES changes since $LAST - waiting for more before a CurseForge update."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$N changes since $LAST."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checks
+        if: steps.check.outputs.go == 'true'
+        run: |
+          python3 tools/changelog.py check
+          sudo apt-get update -qq && sudo apt-get install -y -qq lua5.1 lua5.3 > /dev/null
+          bad=0
+          for f in HealAssist/*.lua; do luac5.1 -p "$f" || bad=1; done
+          lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua > /tmp/t1.log || { tail -20 /tmp/t1.log; bad=1; }
+          HA_REFUSE=1 lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua > /tmp/t2.log || { tail -20 /tmp/t2.log; bad=1; }
+          lua5.3 tests/standalone_test.lua HealAssist > /tmp/t3.log || { tail -20 /tmp/t3.log; bad=1; }
+          exit $bad
+
+      - name: Bump version and tag
+        if: steps.check.outputs.go == 'true'
+        id: ver
+        run: |
+          CUR=$(grep -m1 '^## Version:' HealAssist/HealAssist.toc | sed 's/## Version: *//; s/\r//')
+          if git rev-parse -q --verify "refs/tags/v$CUR" > /dev/null || git rev-parse -q --verify "refs/tags/v$CUR-beta" > /dev/null \
+             || git rev-parse -q --verify "refs/tags/v$CUR-alpha" > /dev/null; then
+            IFS=. read -r MA MI PA <<< "$CUR"; NEW="$MA.$MI.$(( ${PA:-0} + 1 ))"
+          else
+            NEW="$CUR"                      # a version set by hand that wasn't released yet
+          fi
+          sed -i "s/^## Version:.*/## Version: $NEW/" HealAssist/HealAssist.toc
+          python3 tools/changelog.py stamp "$NEW"
+          git config user.name "healassist bot"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -am "Release v$NEW" || true
+          TAG="v$NEW"
+          case "$RELEASE_TYPE" in beta|alpha) TAG="v$NEW-$RELEASE_TYPE" ;; esac
+          git tag "$TAG"
+          git push origin HEAD "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG ($RELEASE_TYPE)"
+
+      - name: Patch notes for CurseForge
+        if: steps.check.outputs.go == 'true'
+        run: |
+          # written into a packaging-only commit (never pushed); the release tag moves onto it
+          python3 tools/changelog.py md "${{ steps.ver.outputs.version }}" > CHANGELOG.md
+          cat CHANGELOG.md
+          git add -f CHANGELOG.md
+          git commit -qm "Patch notes ${{ steps.ver.outputs.version }} - packaging only" || true
+          git tag -f "${{ steps.ver.outputs.tag }}"
+
+      - name: Package and upload (CurseForge + GitHub release)
+        if: steps.check.outputs.go == 'true'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: ${{ vars.CF_PROJECT_ID != '' && format('-p {0}', vars.CF_PROJECT_ID) || '' }}
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}

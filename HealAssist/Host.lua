@@ -158,6 +158,7 @@ SlashCmdList.HEALASSIST = function(input)
     print("  |cffffff00/healassist spells|r - add your own spells")
     print("  |cffffff00/healassist check|r - list the ranks you know")
     print("  |cffffff00/healassist minimap|r - show / hide the minimap button")
+    print("  |cffffff00/healassist news|r - what's new (|cffffff00newsoff|r: don't open it after updates)")
     print("  |cffffff00/healassist theme|r horde / classic / fel - window colours")
     return
   end
@@ -184,6 +185,7 @@ SlashCmdList.HEALASSIST = function(input)
     S:Print("Debug " .. (S.db.global.debug and "on" or "off"))
     return
   end
+  if cmd == "news" or cmd == "newsoff" then run(cmd, rest) return end
   -- everything else is HealAssist's own "heal" command (check, test, preview, ladder, spells)
   if not run("heal", input) then S:Print("Unknown command. Type |cffffff00/healassist help|r.") end
 end

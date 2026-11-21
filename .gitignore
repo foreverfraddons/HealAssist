@@ -1,3 +1,4 @@
 *.zip
 .release/
 __pycache__/
+CHANGELOG.md

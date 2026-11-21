@@ -26,12 +26,35 @@ HealAssist is also built into [Command Center](https://github.com/foreverfraddon
   - `/healassist check` lists the ranks you know.
   - `/healassist minimap` shows or hides the minimap button.
   - `/healassist theme horde|classic|fel` sets the window colours.
+  - `/healassist news` shows What's new; `/healassist newsoff` stops it opening by itself after updates.
 - Settings are saved in `HealAssistDB` and kept per class.
 
 ## With Command Center
 Command Center loads first (`OptionalDeps`). If it already contains HealAssist, this addon steps aside: `Host.lua` sets `S.yield` and the other files return at once, so the frames never show twice.
 
 While both are installed, `/healassist` runs Command Center's `/ccenter heal`, and the HealAssist settings stored in Command Center are the ones used. A Command Center version without HealAssist doesn't stop the standalone from running.
+
+## What's new and the new-version notice
+The first login after an update opens **What's new**, which lists every version you haven't seen yet. The notes come from `HealAssist/Changelog.lua`.
+
+Addons can't reach the internet, so HealAssist users in the same guild or group tell each other which version they run (addon messages with the prefix `HealAssist`). When someone has a newer version, you get a chat line saying so.
+
+## Releases (automatic, like Questicus)
+- **Patch notes:** every change players would notice goes into the top `{ v = "next" ... }` entry of `HealAssist/Changelog.lua`, under `added`, `changed` or `fixed`. Write them for players, with no code talk. Use one line per change: another try at the same fix rewords its line rather than adding one.
+- **When a release happens:** `.github/workflows/release.yml` runs every day at 11:19 UTC, or by hand with Actions → Release → Run workflow (tick *force* to release now). It releases when both of these hold:
+  - `HealAssist/` changed since the last tag;
+  - the "next" entry holds at least **3** changes (repo variable `MIN_CHANGES`).
+- **What a release does:**
+  1. Raises the patch number in `HealAssist.toc`.
+  2. Stamps "next" with that version.
+  3. Tags `vX.Y.Z-beta`. The **beta** type comes from repo variable `RELEASE_TYPE` and can be set to `release` or `alpha`.
+  4. Packages with BigWigsMods/packager and uploads to CurseForge, with the patch notes as the file changelog, and to a GitHub release.
+- **Needed once, in Settings → Secrets and variables → Actions:**
+  - the variable `CF_PROJECT_ID` (the CurseForge project number);
+  - the secret `CF_API_KEY` (a CurseForge API token).
+
+  Nothing is released until `CF_PROJECT_ID` is set.
+- **Releases replace the game folder:** a CurseForge update reinstalls `AddOns\HealAssist`. Before a release, take any newer files from the game folder into the repo.
 
 ## Layout
 ```
@@ -40,6 +63,8 @@ HealAssist/            the addon folder
   Host.lua             what Command Center normally provides: events, messages, saved
                        settings, chat, slash command, minimap button
   UI.lua               copy of Command Center's UI kit (generated - tools/sync_ui.py)
+  Changelog.lua        patch notes (newest first, "next" on top) - shown in game and on CurseForge
+  News.lua             What's new window + new-version notice (standalone only)
   HealAssist.lua       the module itself - the same file as CommandCenter/HealAssist.lua
   Media/UI/*.tga       the art the UI kit and HealAssist use
   icon.tga
@@ -49,6 +74,7 @@ tests/
 tools/
   sync_ui.py           regenerate UI.lua from Command Center's UI.lua
   check_cc.py          check that HealAssist.lua matches Command Center's copy
+  changelog.py         stamp / md / count / check the patch notes (used by the workflows)
 ```
 
 ## Keeping both homes in step
@@ -62,6 +88,6 @@ lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua
 HA_REFUSE=1 lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua
 lua5.3 tests/standalone_test.lua HealAssist
 ```
-GitHub Actions runs these on every push (`.github/workflows/checks.yml`), plus a Lua 5.1 syntax check.
+GitHub Actions runs these on every push (`.github/workflows/checks.yml`), together with a Lua 5.1 syntax check and the patch notes check.
 
 Author: Fatedfr.

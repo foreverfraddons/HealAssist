@@ -10,4 +10,6 @@
 
 Host.lua
 UI.lua
+Changelog.lua
+News.lua
 HealAssist.lua

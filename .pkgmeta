@@ -3,8 +3,14 @@ package-as: HealAssist
 move-folders:
   HealAssist/HealAssist: HealAssist
 
+# patch notes for the CurseForge file: written by the release workflow from HealAssist/Changelog.lua
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
 ignore:
   - tests
   - tools
   - README.md
   - CHANGELOG.md
+  - .github
