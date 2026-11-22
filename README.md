@@ -14,6 +14,9 @@ HealAssist is also built into [Command Center](https://github.com/foreverfraddon
 - **Cure buttons:** there is one button per cure your class knows, stacked beside each bar.
 - **Debuff colours:** the bar takes the debuff's colour, the type is written on it, and the cure button that fits lights up. The game draws these through its aura containers, so they work in combat.
 - **Custom spells:** you can add spells, so any class can use HealAssist.
+- **Classes without heals:**
+  - A class that has a cure (Mage) gets **decurse frames**: left-clicking someone casts the cure, and the debuff colours and cure buttons work as usual.
+  - A class with no heals and no cures (Warrior, Rogue, Hunter, Warlock) has HealAssist switched off, until you add a spell of your own.
 - **Test mode:** a made-up group with changing health shows every setting live.
 
 ## Use
@@ -71,6 +74,7 @@ HealAssist/            the addon folder
 tests/
   ha_test.lua          the module as inside Command Center (texlua / lua5.3)
   standalone_test.lua  Host + UI + module alone, and stepping aside for Command Center
+  mode_test.lua        class modes: heal / cure (no heals, has a cure) / off
 tools/
   sync_ui.py           regenerate UI.lua from Command Center's UI.lua
   check_cc.py          check that HealAssist.lua matches Command Center's copy
@@ -87,6 +91,7 @@ tools/
 lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua
 HA_REFUSE=1 lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua
 lua5.3 tests/standalone_test.lua HealAssist
+lua5.3 tests/mode_test.lua HealAssist/HealAssist.lua
 ```
 GitHub Actions runs these on every push (`.github/workflows/checks.yml`), together with a Lua 5.1 syntax check and the patch notes check.
 

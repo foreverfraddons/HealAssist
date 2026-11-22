@@ -7,7 +7,11 @@
 local _, S = ...
 if S.yield then return end
 S.Changelog = {
-  { v = "next" },
+  { v = "next",
+    added = {
+      "Classes without heals: a class with a cure (Mage) gets decurse frames - left-click someone to remove a curse, the bar shows the debuff's colour and the cure button lights up. Classes with no heals or cures (Warrior, Rogue, Hunter, Warlock) have HealAssist switched off.",
+    },
+  },
   { v = "1.0.0",
     added = {
       "HealAssist on its own: the healing frames from Command Center now come as a separate addon too. Type /healassist or click the minimap button.",

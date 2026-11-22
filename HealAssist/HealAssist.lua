@@ -20,7 +20,7 @@
 -- standalone copy steps aside (S.yield) so the frames never show twice.
 local _, S = ...
 if S.yield then return end
-local REV = 25
+local REV = 26
 if S.ModuleRev then S:ModuleRev("HealAssist", REV) end
 S.HEALASSIST_REV = REV
 local CMD = S.HA_CMD or "/ccenter heal"     -- slash command shown in texts
@@ -74,6 +74,19 @@ local function classKeys()
   for _, k in ipairs(customKeys) do if SPELLS[k] then out[#out + 1] = k end end
   return out
 end
+
+-- what HealAssist does for this class:
+--   "heal" - the class has heals (built in or added on the Clicks tab's "Your spells...")
+--   "cure" - no heals, but the class has a built-in cure (Mage: Remove Lesser Curse): the
+--            frames become decurse frames - left click cures, cure buttons + debuff colours
+--   "off"  - no heals and no cures (Warrior, Rogue, Hunter, Warlock): no frames
+local function classMode()
+  if #classKeys() > 0 then return "heal" end
+  local d = S.HEALASSIST_DISPELS
+  if d and d[myClass()] then return "cure" end
+  return "off"
+end
+S.HealAssistMode = classMode
 
 local function spellName(id)
   if C_Spell and C_Spell.GetSpellName then local n = try(C_Spell.GetSpellName, id); if type(n) == "string" then return n end end
@@ -198,10 +211,29 @@ local function defaultBinds(cls)
   elseif cls == "PALADIN" then
     b["|1"] = { kind = "smart", key = "HL" }; b["|2"] = { kind = "smart", key = "FOL" }; b["shift|1"] = { kind = "max", key = "HL" }
   else
-    b["|1"] = { kind = "target" }; b["|2"] = { kind = "menu" }
+    local cures = S.HEALASSIST_DISPELS and S.HEALASSIST_DISPELS[cls]
+    if cures and cures[1] then          -- no heals: decurse frames (left click = the first cure)
+      b["|1"] = { kind = "cure", cure = cures[1].name }
+      b["|2"] = cures[2] and { kind = "cure", cure = cures[2].name } or { kind = "menu" }
+      b["shift|1"] = { kind = "target" }
+    else
+      b["|1"] = { kind = "target" }; b["|2"] = { kind = "menu" }
+    end
   end
   b["ctrl|1"] = { kind = "target" }; b["ctrl|2"] = { kind = "menu" }
   return b
+end
+-- the defaults before cure mode existed (no-heal classes): only target / menu clicks
+local function oldPlainBinds(binds)
+  local n = 0
+  for k, v in pairs(binds) do
+    if type(v) == "table" and v.kind ~= "none" then
+      n = n + 1
+      local want = (k == "|1" or k == "ctrl|1") and "target" or ((k == "|2" or k == "ctrl|2") and "menu" or nil)
+      if v.kind ~= want then return false end
+    end
+  end
+  return n == 4
 end
 
 local function store()
@@ -220,6 +252,12 @@ local function CL()
   local c = h.classes[cls]
   if type(c) ~= "table" then c = {}; h.classes[cls] = c end
   if type(c.binds) ~= "table" then c.binds = defaultBinds(cls) end
+  -- r26: a no-heal class with a cure still on the old target / menu defaults gets the cure clicks
+  if not c.cureV1 then
+    c.cureV1 = true
+    local d = S.HEALASSIST_DISPELS
+    if d and d[cls] and #classKeys() == 0 and oldPlainBinds(c.binds) then c.binds = defaultBinds(cls) end
+  end
   c.spells = type(c.spells) == "table" and c.spells or {}
   c.group = type(c.group) == "table" and c.group or {}
   local gr = c.group
@@ -379,6 +417,15 @@ local function resolve(b, u, forCombat)
   if type(b) ~= "table" or not b.kind or b.kind == "none" then return "none", nil, "|cff777777nothing|r" end
   if b.kind == "target" then return "target", nil, "Target" end
   if b.kind == "menu" then return "togglemenu", nil, "Menu" end
+  if b.kind == "cure" then
+    local list = S.HealAssistDispelButtonsList and S.HealAssistDispelButtonsList() or {}
+    for _, c in ipairs(list) do
+      if not b.cure or c.name == b.cure or (S.HealAssistCureBase and S.HealAssistCureBase(c) == b.cure) then
+        return "spell", (L().castBy == "name") and c.name or c.id, c.name .. " |cffaaaaaa(" .. c.typeList .. ")|r"
+      end
+    end
+    return "none", nil, tostring(b.cure or "Cure") .. " |cffff5555(not learned)|r"
+  end
   local key = b.key
   local R = ranks(key)
   if not R or not R.max then return "none", nil, sname(key) .. " |cffff5555(not learned)|r" end
@@ -1154,7 +1201,7 @@ local function dispelButtons()
         id = id or knownByName(nm)
         if id then
           local btn = bySpell[e.name]
-          if not btn then btn = { name = spellName(id) or nm, id = id, icon = spellIcon(id), types = {} }; bySpell[e.name] = btn; out[#out + 1] = btn end
+          if not btn then btn = { name = spellName(id) or nm, base = e.name, id = id, icon = spellIcon(id), types = {} }; bySpell[e.name] = btn; out[#out + 1] = btn end
           btn.types[t] = true
           break
         end
@@ -1170,6 +1217,7 @@ local function dispelButtons()
   return out
 end
 S.HealAssistDispelButtonsList = dispelButtons
+S.HealAssistCureBase = function(c) return c.base end
 local function canCure(t) for _, btn in ipairs(dispelButtons()) do if btn.types[t] then return true end end return false end
 -- debuff types on a unit; nil when the game won't tell (in combat on Forever)
 local function readDebuffs(u)
@@ -1568,7 +1616,7 @@ local function applyLayout()
   header:SetAttribute("maxColumns", ceil(40 / max(1, l.perCol)))
   header:SetAttribute("showSolo", (l.solo or not l.locked) and true or false)
   if S.HealAssistSelfBtn then S.HealAssistSelfBtn:SetShown(l.on and l.selfTest and true or false) end
-  if l.on and not test.on then header:Show() else header:Hide() end
+  if l.on and not test.on and classMode() ~= "off" then header:Show() else header:Hide() end
   if test.on then placeTest() end
   anchor.handle:SetShown(not l.locked)
   liveHandlerAttrs()
@@ -2039,8 +2087,19 @@ for _, ev in ipairs({ "UNIT_HEALTH", "UNIT_HEALTH_FREQUENT", "UNIT_MAXHEALTH", "
 S:On("UNIT_AURA", function(_, u) local b = u and byUnit[u]; if b then b.haDebDirty = true end end)
 S:On("GROUP_ROSTER_UPDATE", function() if header and not combat() then for _, b in ipairs(kids) do updateClicks(b) end end end)
 S:Listen("LOGIN", function()
-  CL()
+  local c = CL()
   if not L().on then return end
+  if classMode() == "off" then
+    if not c.offNote then
+      c.offNote = true
+      S:Print("HealAssist is off on this character: your class has no heals or cures. (Add a spell with " .. CMD .. " spells to use it anyway.)")
+    end
+    return
+  end
+  if classMode() == "cure" and not c.cureNote then
+    c.cureNote = true
+    S:Print("HealAssist: your class has no heals, so the frames are decurse frames - left-click a frame to remove a curse / poison / disease, or use the cure buttons beside it.")
+  end
   if combat() then
     local f = CreateFrame("Frame")
     f:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -2110,6 +2169,8 @@ local function customChanged()
   if S.HealAssistRefreshAll then S.HealAssistRefreshAll() end
   if S.RefreshHealAssist then S:RefreshHealAssist() end
   if S.HealAssistRefreshCustom then S.HealAssistRefreshCustom() end
+  -- a class that was off (no heals, no cures) gets its frames once it has a spell
+  if L().on and not anchor and not combat() and classMode() ~= "off" then buildFrames() elseif anchor and not combat() then applyLayout() end
 end
 function S.HealAssistAddSpell(id)
   id = tonumber(id)
@@ -2208,7 +2269,27 @@ local KINDS = {
   { value = "rank", text = "A set rank" },
   { value = "target", text = "Target" },
   { value = "menu", text = "Unit menu" },
+  { value = "cure", text = "Cure / cleanse" },
 }
+-- the click kinds this class can use (no heals: no heal kinds; no cures: no cure kind)
+local function kindOptions()
+  local mode, hasCure = classMode(), S.HEALASSIST_DISPELS and S.HEALASSIST_DISPELS[myClass()]
+  local out = {}
+  for _, k in ipairs(KINDS) do
+    local heal = k.value == "auto" or k.value == "smart" or k.value == "max" or k.value == "rank"
+    if (not heal or mode == "heal") and (k.value ~= "cure" or hasCure) then out[#out + 1] = k end
+  end
+  return out
+end
+local function cureOptions()
+  local out = {}
+  for _, e in ipairs((S.HEALASSIST_DISPELS or {})[myClass()] or {}) do
+    local known
+    for _, c in ipairs(S.HealAssistDispelButtonsList and S.HealAssistDispelButtonsList() or {}) do if c.base == e.name then known = c end end
+    out[#out + 1] = { value = e.name, text = (known and known.name or e.name) .. (known and "" or " |cff777777(not learned)|r") }
+  end
+  return out
+end
 local function refreshAll()
   if S.HealAssistLiveHandler then S.HealAssistLiveHandler() end
   curveState.sig = nil
@@ -2235,6 +2316,7 @@ end
 local function buildClicks(p)
   local hint = UI:Text(p, "|cffaaaaaaPick what each click does on a HealAssist frame. |cffffd100Smart|r|cffaaaaaa = the rank is chosen from how much health the person is missing (steps on the Ranks tab). |cffffd100Auto|r|cffaaaaaa = smart, but switches to your group heal when the people around them are hurt too (Group heal tab).|r", "small")
   hint:SetPoint("TOPLEFT", 14, -6); hint:SetWidth(W - 28); hint:SetJustifyH("LEFT")
+  p.hint, p.hintHeal = hint, hint:GetText()
   local sf, child = UI:Scroll(p, W - 16, 320)
   sf:SetPoint("TOPLEFT", 8, -50)
   child:SetHeight(20 * 28 + 8)
@@ -2246,9 +2328,10 @@ local function buildClicks(p)
     row.label = UI:Text(child, bindLabel(mod, btn), "small"); row.label:SetPoint("TOPLEFT", 6, y - 6); row.label:SetWidth(100)
     local function cur() local b = CL().binds[bk]; if type(b) ~= "table" then b = { kind = "none" }; CL().binds[bk] = b end return b end
     local function changed() refreshAll(); S:RefreshHealAssist() end
-    row.kind = UI:Dropdown(child, 210, KINDS, "none", function(v)
+    row.kind = UI:Dropdown(child, 210, kindOptions, "none", function(v)
       local b = cur(); b.kind = v
       if (v == "smart" or v == "auto" or v == "max" or v == "rank") and not b.key then b.key = classKeys()[1] end
+      if v == "cure" and not b.cure then local o = cureOptions()[1]; b.cure = o and o.value end
       if v == "rank" and not b.rank then b.rank = 1 end
       changed()
     end)
@@ -2257,12 +2340,18 @@ local function buildClicks(p)
     row.spell:SetPoint("LEFT", row.kind, "RIGHT", 6, 0)
     row.rank = UI:Dropdown(child, 80, function() return rankOptions(cur().key) end, 1, function(v) cur().rank = v; changed() end)
     row.rank:SetPoint("LEFT", row.spell, "RIGHT", 6, 0)
+    row.cure = UI:Dropdown(child, 150, cureOptions, nil, function(v) cur().cure = v; changed() end)
+    row.cure:SetPoint("LEFT", row.kind, "RIGHT", 6, 0)
     function row:Refresh()
       local b = CL().binds[bk]
       local kind = type(b) == "table" and b.kind or "none"
       self.kind:SetValue(kind)
       local spelly = kind == "smart" or kind == "auto" or kind == "max" or kind == "rank"
-      self.spell:SetShown(spelly); self.rank:SetShown(kind == "rank")
+      self.spell:SetShown(spelly); self.rank:SetShown(kind == "rank"); self.cure:SetShown(kind == "cure")
+      if kind == "cure" then
+        self.cure:SetValue(b.cure)
+        for _, o in ipairs(cureOptions()) do if o.value == b.cure then self.cure.text:SetText(o.text) end end
+      end
       if spelly then self.spell:SetValue(b.key); self.spell.text:SetText(sname(b.key) .. (knownKey(b.key) and "" or " |cff777777(not learned)|r")) end
       if kind == "rank" then self.rank:SetValue(tonumber(b.rank) or 1); self.rank.text:SetText("Rank " .. tostring(b.rank or 1)) end
     end
@@ -2271,6 +2360,7 @@ local function buildClicks(p)
   end end
   local yb = -378
   local cl = UI:Text(p, "Fallback in combat:", "small"); cl:SetPoint("TOPLEFT", 14, yb - 5)
+  p.healLabels = { cl }
   p.combat = UI:Dropdown(p, 150, { { value = "max", text = "The max rank" }, { value = "mid", text = "The middle rank" },
     { value = "low", text = "Rank 1" }, { value = "keep", text = "The rank gauged before the fight" } }, CL().combat, function(v) CL().combat = v end)
   p.combat:SetPoint("TOPLEFT", 250, yb)
@@ -2283,6 +2373,7 @@ local function buildClicks(p)
   p.zones:SetPoint("LEFT", p.combat, "RIGHT", 12, 0)
   yb = yb - 30
   local cb = UI:Text(p, "Cast ranks by:", "small"); cb:SetPoint("TOPLEFT", 14, yb - 5)
+  p.healLabels[#p.healLabels + 1] = cb
   p.castBy = UI:Dropdown(p, 200, { { value = "id", text = "Spell ID (default)" }, { value = "name", text = "Name (Rank N)" } }, L().castBy,
     function(v) L().castBy = v; refreshAll() end)
   p.castBy:SetPoint("TOPLEFT", 250, yb)
@@ -2302,6 +2393,16 @@ local function buildClicks(p)
   end)
   def:SetPoint("BOTTOMRIGHT", -14, 14)
   function p:Refresh()
+    local mode = classMode()
+    if mode == "cure" then
+      self.hint:SetText("|cffffd100Decurse mode:|r |cffaaaaaayour class has no heals, so HealAssist frames are for removing debuffs. |cffffd100Cure / cleanse|r|cffaaaaaa casts the cure you pick on that person. The bar turns the debuff's colour and the right cure button lights up - also in combat.|r")
+    elseif mode == "off" then
+      self.hint:SetText("|cffff7777HealAssist is off on this character:|r |cffaaaaaayour class has no heals or cures. Add a spell with \"Your spells...\" to use the frames anyway.|r")
+    else
+      self.hint:SetText(self.hintHeal)
+    end
+    for _, w in ipairs({ self.combat, self.castBy, self.zones }) do w:SetShown(mode == "heal") end
+    if self.healLabels then for _, w in ipairs(self.healLabels) do w:SetShown(mode == "heal") end end
     for _, r in ipairs(self.rows) do r:Refresh() end
     self.combat:SetValue(CL().combat); self.castBy:SetValue(L().castBy); self.live:SetChecked(CL().live and true or false)
     self.live.label:SetText(S.HealAssistLiveBroken and "Live rank in combat |cffff7777(blocked by the game)|r" or "Live rank in combat")

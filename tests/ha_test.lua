@@ -196,7 +196,7 @@ S.report = function(e) print("REPORT: " .. tostring(e)) end
 -- load
 local chunk = assert(loadfile(arg[1] or "HealAssist.lua"))
 chunk("CommandCenter", S)
-check(S.rev == 25, "revision line registered")
+check(S.rev == 26, "revision line registered")
 
 listen("LOGIN")
 local header = _G.CC_HealAssistGroup

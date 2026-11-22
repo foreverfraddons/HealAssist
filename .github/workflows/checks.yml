@@ -20,3 +20,5 @@ jobs:
           HA_REFUSE=1 lua5.3 tests/ha_test.lua HealAssist/HealAssist.lua
       - name: Standalone tests
         run: lua5.3 tests/standalone_test.lua HealAssist
+      - name: Class mode tests (heal / cure / off)
+        run: lua5.3 tests/mode_test.lua HealAssist/HealAssist.lua
