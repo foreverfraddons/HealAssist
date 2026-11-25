@@ -2,7 +2,7 @@
 ## Title: |cff4fd1c5Heal|r|cffe0b04aAssist|r
 ## Notes: HealBot-style healing frames for WoW Forever: click casting, rank gauging from missing health, rank zones, group heals, cure buttons and debuff colours that work in combat. Also built into Command Center.
 ## Author: Fatedfr
-## Version: 1.0.0
+## Version: 1.0.1
 ## SavedVariables: HealAssistDB
 ## OptionalDeps: CommandCenter
 ## IconTexture: Interface\AddOns\HealAssist\icon.tga

@@ -7,7 +7,8 @@
 local _, S = ...
 if S.yield then return end
 S.Changelog = {
-  { v = "next",
+  { v = "next" },
+  { v = "1.0.1",
     added = {
       "Classes without heals: a class with a cure (Mage) gets decurse frames - left-click someone to remove a curse, the bar shows the debuff's colour and the cure button lights up. Classes with no heals or cures (Warrior, Rogue, Hunter, Warlock) have HealAssist switched off.",
     },
