@@ -11,6 +11,10 @@ S.Changelog = {
     added = {
       "Classes without heals: a class with a cure (Mage) gets decurse frames - left-click someone to remove a curse, the bar shows the debuff's colour and the cure button lights up. Classes with no heals or cures (Warrior, Rogue, Hunter, Warlock) have HealAssist switched off.",
     },
+    fixed = {
+      "Debuff colours work again: a poisoned, diseased or cursed person's bar now turns that colour and the right cure button lights up - also in combat and in raids.",
+      "Less lag and stutter: switching specs no longer freezes the game for a moment, and the frames make much less work for the game while they update.",
+    },
   },
   { v = "1.0.0",
     added = {

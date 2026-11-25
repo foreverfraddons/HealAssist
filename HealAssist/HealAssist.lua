@@ -20,7 +20,7 @@
 -- standalone copy steps aside (S.yield) so the frames never show twice.
 local _, S = ...
 if S.yield then return end
-local REV = 26
+local REV = 30
 if S.ModuleRev then S:ModuleRev("HealAssist", REV) end
 S.HEALASSIST_REV = REV
 local CMD = S.HA_CMD or "/ccenter heal"     -- slash command shown in texts
@@ -535,7 +535,7 @@ local function windowPoints(lo, hi, scale)
   return pts
 end
 -- rank windows of a spell: { { r, lo, hi } } in health fraction
-local function rankWindows(key)
+local function computeWindows(key)
   local R = ranks(key)
   local out = {}
   if not R or not R.max then return out end
@@ -550,6 +550,30 @@ local function rankWindows(key)
   end
   return out
 end
+-- rank windows + their signatures, worked out once per frame per spell: every frame's paint asked for
+-- them several times (new tables each time = HealAssist's steady garbage); settings can only change
+-- between frames, so this is always current
+local rwCache, rwAt = {}, nil
+local function rwEntry(key)
+  if key == nil then return { list = computeWindows(key), marks = "", curves = "" } end
+  local now = GetTime()
+  if rwAt ~= now then wipe(rwCache); rwAt = now end
+  local e = rwCache[key]
+  if not e then
+    local list = computeWindows(key)
+    local a, b = {}, {}
+    for i, w in ipairs(list) do a[i] = w.r .. "/" .. w.hi; b[i] = w.r .. "/" .. w.lo .. "/" .. w.hi end
+    e = { list = list, marks = table.concat(a, ","), curves = table.concat(b, ",") }
+    rwCache[key] = e
+  end
+  return e
+end
+-- (a copy of the list: some callers sort it in place; the windows themselves are never changed)
+local function rankWindows(key)
+  local src, out = rwEntry(key).list, {}
+  for i = 1, #src do out[i] = src[i] end
+  return out
+end
 -- does the game give 0-1 or 0-100 to a curve? (checked out of combat)
 local function detectScale()
   if curveState.scaleChecked or combat() or not UnitHealthPercent then return end
@@ -560,7 +584,7 @@ local function detectScale()
   end
 end
 local function buildCurves(key)
-  local sig = key and (key .. ":" .. table.concat((function() local t = {} for _, w in ipairs(rankWindows(key)) do t[#t + 1] = w.r .. "/" .. w.lo .. "/" .. w.hi end return t end)(), ",")) or ""
+  local sig = key and (key .. ":" .. rwEntry(key).curves) or ""
   if curveState.sig == sig then return curveState.list end
   curveState.sig, curveState.list = sig, {}
   if not key or curveState.ok == false then return curveState.list end
@@ -647,7 +671,7 @@ end
 local function layoutMarks(b, key)
   local l = L()
   local sig = (key or "") .. ":" .. tostring(l.marks) .. ":" .. tostring(l.markNums) .. ":" .. floor(b:GetWidth() + 0.5) .. ":" .. (curveState.sig or "")
-  if key then local t = {} for _, w in ipairs(rankWindows(key)) do t[#t + 1] = w.r .. "/" .. w.hi end sig = sig .. table.concat(t, ",") end
+  if key then sig = sig .. rwEntry(key).marks end
   if b.haMarkSig == sig then return end
   b.haMarkSig = sig
   for _, m in ipairs(b.marks) do m:Hide() end
@@ -821,6 +845,13 @@ function S.HealAssistZones(b)
   b.haZones = b.haZones or {}
   local l = L()
   local key = primaryKey()
+  -- nothing it depends on changed (spell, ranks, unit, size, on/off): skip - it ran with every click
+  -- update (3 times a second per frame); a click you edit shows within a second (the time check)
+  local pre = tostring(key) .. "|" .. (key and rwEntry(key).curves or "") .. "|" .. tostring(b:GetAttribute("unit")) .. "|"
+    .. floor((b:GetWidth() or 0) + 0.5) .. "x" .. floor((b:GetHeight() or 0) + 0.5) .. "|" .. tostring(l.zones)
+  local nowT = GetTime()
+  if b.haZonePre == pre and nowT - (b.haZoneAt or 0) < 1 then return end
+  b.haZonePre, b.haZoneAt = pre, nowT
   local wins = key and rankWindows(key) or {}
   if not l.zones or #wins == 0 then
     for _, z in ipairs(b.haZones) do z:Hide() end
@@ -1325,67 +1356,95 @@ end
 -- If the client lacks the template, the old (out-of-combat only) reading is used.
 ---------------------------------------------------------------------------
 local engine = { ok = nil }
+do
+local EMPTY_W = {}
+local STYLE = Enum and Enum.CustomAuraButtonDispelTypeTextureStyle or {}
+local DICON = { Magic = "Interface\\RaidFrame\\Raid-Icon-DebuffMagic", Curse = "Interface\\RaidFrame\\Raid-Icon-DebuffCurse",
+  Poison = "Interface\\RaidFrame\\Raid-Icon-DebuffPoison", Disease = "Interface\\RaidFrame\\Raid-Icon-DebuffDisease" }
 local function colorObj(c) if CreateColor then return CreateColor(c[1], c[2], c[3], 1) end return { r = c[1], g = c[2], b = c[3] } end
 local function dispelColorMap(onlyTypes)
   local m = {}
   for _, t in ipairs(DTYPES) do
     if not onlyTypes or onlyTypes[t] then m[t] = colorObj(DCOLOR[t]) else m[t] = colorObj({ 0, 0, 0 }) end
   end
-  m.None = colorObj(onlyTypes and { 0, 0, 0 } or { 0.8, 0, 0 })
   return m
 end
+local function iconAssetMap()
+  local m = {}
+  for t, path in pairs(DICON) do m[t] = { asset = path } end
+  return m
+end
+-- The game only lets addons set up aura buttons while aura data is readable: out of combat and
+-- not while C_Secrets.ShouldAurasBeSecret() says so (inside instances it can stay true). Built
+-- buttons keep working afterwards - in combat too. (KstyleUI on Forever does the same.)
+local function auraOpen()
+  if combat() then return false end
+  if C_Secrets and C_Secrets.ShouldAurasBeSecret then
+    local ok, secret = pcall(C_Secrets.ShouldAurasBeSecret)
+    if not ok or isSecret(secret) then return false end
+    return secret ~= true
+  end
+  return true
+end
+engine.open = auraOpen
 local function newContainer(parent)
   if engine.ok == false then return nil end
   local ok, c = pcall(CreateFrame, "AuraContainer", nil, parent, "CustomAuraContainerTemplate")
-  if not ok or not c then engine.ok = false; engine.why = tostring(c); return nil end
+  if not ok or type(c) ~= "table" or type(c.AddAuraSlot) ~= "function" or type(c.SetUnit) ~= "function" then
+    engine.ok = false; engine.why = ok and "the aura container has no slots on this client" or tostring(c); return nil
+  end
   engine.ok = true
   if c.EnableMouse then pcall(c.EnableMouse, c, false) end
   return c
 end
--- the slot's one button: size it, keep clicks going to the frame underneath, then dress it
-local function slotOptions(dress)
-  return {
-    initializeFrame = function(a, b2)
-      local btn = (type(b2) == "table" and b2.SetSize) and b2 or a
-      if type(btn) ~= "table" then return end
+-- add the one slot to a container; initializeFrame hands us its button: pin it over `over`
+-- (the game doesn't place a slot's button - unplaced it never shows), let clicks through,
+-- then dress it. Returns the dressed button or nil (+ reason).
+local function addSlot(c, key, over, dress)
+  local slotBtn, why
+  local ok, err = pcall(c.AddAuraSlot, c, key, "HARMFUL|RAID_PLAYER_DISPELLABLE", {
+    initializeFrame = function(btn)
+      if type(btn) ~= "table" or type(btn.AddDispelTypeTexture) ~= "function" then why = "the slot button has no dispel textures"; return end
       pcall(btn.EnableMouse, btn, false)
       if btn.SetMouseClickEnabled then pcall(btn.SetMouseClickEnabled, btn, false) end
       if btn.SetMouseMotionEnabled then pcall(btn.SetMouseMotionEnabled, btn, false) end
-      pcall(dress, btn)
+      btn:ClearAllPoints()
+      btn:SetAllPoints(over)
+      local fine, e = pcall(dress, btn)
+      if fine then slotBtn = btn else why = tostring(e) end
     end,
-  }
+  })
+  if not ok then why = tostring(err) end
+  if not slotBtn then
+    if c.SetAuraSlotEnabled then pcall(c.SetAuraSlotEnabled, c, key, false) end
+    c:Hide()
+    engine.why = why or "the slot was refused"
+  end
+  return slotBtn
 end
-local function sizeSlotButton(c, w, h)
-  if not c or not c.GetChildren then return end
-  for _, ch in ipairs({ c:GetChildren() }) do pcall(ch.SetSize, ch, w, h) end
-end
--- frame-wide wash + type name
+-- frame: a wash over the health bar + a small type icon, both tinted / picked by the game
 local function makeFrameWatch(b)
   local c = newContainer(b)
   if not c then return nil end
   c:SetAllPoints(b)
   c:SetFrameLevel(b.hp:GetFrameLevel() + 1)
-  local opts = slotOptions(function(btn)
-    btn:SetSize(b:GetWidth() or 92, b:GetHeight() or 40)
-    local wash = btn:CreateTexture(nil, "ARTWORK")
-    wash:SetPoint("TOPLEFT", 1, -1); wash:SetPoint("BOTTOMRIGHT", -1, 1)
+  local btn = addSlot(c, "hadispel", b, function(btn)
+    local hold = CreateFrame("Frame", nil, btn)          -- textures live on a child placed on the bar
+    hold:SetAllPoints(b.hp)
+    hold:SetFrameLevel(b.hp:GetFrameLevel() + 1)
+    local wash = hold:CreateTexture(nil, "ARTWORK")
+    wash:SetAllPoints(hold)
     wash:SetTexture(WHITE); wash:SetAlpha(L().dispelWash or 0.6)
-    btn:AddDispelTypeTexture(wash, { style = Enum and Enum.CustomAuraButtonDispelTypeTextureStyle and Enum.CustomAuraButtonDispelTypeTextureStyle.PreserveAsset or 3,
-      showWhenHarmful = true, customDispelColorMap = dispelColorMap(nil) })
-    btn.haWash = wash
-    if btn.SetDispelTypeText then
-      local fs = btn:CreateFontString(nil, "OVERLAY")
-      fs:SetFontObject(UI.fSmall or GameFontNormalSmall)
-      local font, size = fs:GetFont(); if font then fs:SetFont(font, size, "OUTLINE") end
-      fs:SetPoint("CENTER", 0, -1)
-      pcall(btn.SetDispelTypeText, btn, fs, {})
-      btn.haText = fs
-    end
-    b.haWatchBtn = btn
+    btn:AddDispelTypeTexture(wash, { style = STYLE.PreserveAsset or 3, showWhenHarmful = true, customDispelColorMap = dispelColorMap(nil) })
+    local icon = hold:CreateTexture(nil, "OVERLAY")
+    icon:SetSize(14, 14); icon:SetPoint("CENTER", hold, "CENTER", 0, 0)
+    btn:AddDispelTypeTexture(icon, { style = STYLE.CustomAsset or 4, showWhenHarmful = true, customDispelAssetMap = iconAssetMap() })
+    btn.haHold, btn.haWash, btn.haIcon = hold, wash, icon
   end)
-  local ok, err = pcall(c.AddAuraSlot, c, "hadispel", "HARMFUL|RAID_PLAYER_DISPELLABLE", opts)
-  if not ok then engine.ok = false; engine.why = tostring(err); c:Hide(); return nil end
-  return c
+  if not btn then return c, nil end
+  b.haWatchBtn = btn
+  engine.built = (engine.built or 0) + 1
+  return c, btn
 end
 -- glow on a cure button, only for the types it cures
 local function makeCureWatch(d, types)
@@ -1393,78 +1452,102 @@ local function makeCureWatch(d, types)
   if not c then return nil end
   c:SetAllPoints(d)
   c:SetFrameLevel(d:GetFrameLevel() + 2)
-  local opts = slotOptions(function(btn)
-    btn:SetSize(d:GetWidth() or 16, d:GetHeight() or 16)
-    local glow = btn:CreateTexture(nil, "OVERLAY")
-    glow:SetPoint("TOPLEFT", -2, 2); glow:SetPoint("BOTTOMRIGHT", 2, -2)
+  local btn = addSlot(c, "hacure", d, function(btn)
+    local hold = CreateFrame("Frame", nil, btn)
+    hold:SetPoint("TOPLEFT", d, "TOPLEFT", -2, 2); hold:SetPoint("BOTTOMRIGHT", d, "BOTTOMRIGHT", 2, -2)
+    local glow = hold:CreateTexture(nil, "OVERLAY")
+    glow:SetAllPoints(hold)
     glow:SetTexture(WHITE); glow:SetBlendMode("ADD"); glow:SetAlpha(0.55)
-    btn:AddDispelTypeTexture(glow, { style = Enum and Enum.CustomAuraButtonDispelTypeTextureStyle and Enum.CustomAuraButtonDispelTypeTextureStyle.PreserveAsset or 3,
-      showWhenHarmful = true, customDispelColorMap = dispelColorMap(types) })
+    btn:AddDispelTypeTexture(glow, { style = STYLE.PreserveAsset or 3, showWhenHarmful = true, customDispelColorMap = dispelColorMap(types) })
   end)
-  local ok = pcall(c.AddAuraSlot, c, "hacure", "HARMFUL|RAID_PLAYER_DISPELLABLE", opts)
-  if not ok then c:Hide(); return nil end
+  if not btn then return nil end
   return c
 end
--- create / point / size the watchers of a frame (out of combat)
+-- frames waiting for aura data to be readable before their watchers can be set up
+local waiting = {}
+local waitFrame
+local function retryWaiting()
+  if not auraOpen() then return end
+  local list = {}
+  for b in pairs(waiting) do list[#list + 1] = b end
+  for _, b in ipairs(list) do waiting[b] = nil; if S.HealAssistAuraWatch then pcall(S.HealAssistAuraWatch, b) end end
+end
+local function waitFor(b)
+  waiting[b] = true
+  if not waitFrame then
+    waitFrame = CreateFrame("Frame")
+    pcall(waitFrame.RegisterEvent, waitFrame, "PLAYER_REGEN_ENABLED")
+    pcall(waitFrame.RegisterEvent, waitFrame, "ADDON_RESTRICTION_STATE_CHANGED")
+    pcall(waitFrame.RegisterEvent, waitFrame, "ZONE_CHANGED_NEW_AREA")
+    pcall(waitFrame.RegisterEvent, waitFrame, "PLAYER_ENTERING_WORLD")
+    waitFrame:SetScript("OnEvent", function() if C_Timer and C_Timer.After then C_Timer.After(0.5, retryWaiting) else retryWaiting() end end)
+  end
+end
+engine.waiting = waiting
+-- create / point the watchers of a frame (out of combat)
 function S.HealAssistAuraWatch(b)
   if not b or b.fakeIndex or combat() then return end
   local l = L()
   local u = b:GetAttribute("unit")
-  local want = l.dispelEngine and l.dispel ~= "off" or (l.dispelEngine and (l.dispelColor or l.dispelText))
+  local want = l.dispelEngine and (l.dispelColor or l.dispel ~= "off")
   if not want or engine.ok == false then
     if b.haWatch then b.haWatch:Hide() end
-    for _, d in ipairs(b.haDispel or {}) do if d.haWatch then d.haWatch:Hide() end end
+    for _, d in ipairs(b.haDispel or EMPTY_W) do if d.haWatch then d.haWatch:Hide() end end
     return
   end
-  if not b.haWatch then b.haWatch = makeFrameWatch(b) end
-  local c = b.haWatch
-  if c then
-    c:SetShown(l.dispelColor or l.dispelText)
-    if b.haWatchUnit ~= u then b.haWatchUnit = u; pcall(c.SetUnit, c, u) end
-    sizeSlotButton(c, b:GetWidth(), b:GetHeight())
-    if b.haWatchBtn then
-      if b.haWatchBtn.haWash then b.haWatchBtn.haWash:SetShown(l.dispelColor and true or false); b.haWatchBtn.haWash:SetAlpha(l.dispelWash or 0.6) end
-      if b.haWatchBtn.haText then b.haWatchBtn.haText:SetShown(l.dispelText and true or false) end
-    end
+  local open = auraOpen()
+  if not b.haWatch then
+    if not open then waitFor(b) return end
+    b.haWatch = makeFrameWatch(b)
   end
-  for _, d in ipairs(b.haDispel or {}) do
+  local c = b.haWatch
+  if c and b.haWatchBtn then
+    c:SetShown(l.dispelColor and true or false)
+    if b.haWatchUnit ~= u then b.haWatchUnit = u; pcall(c.SetUnit, c, u) end
+    local w = b.haWatchBtn
+    if w.haWash then w.haWash:SetAlpha(l.dispelWash or 0.6) end
+    if w.haIcon then w.haIcon:SetShown(l.dispelText and true or false) end
+  end
+  for _, d in ipairs(b.haDispel or EMPTY_W) do
     if d:IsShown() and d.haTypes then
       local sig = d.haInfo and d.haInfo.typeList or ""
       if d.haWatch and d.haWatchSig ~= sig then d.haWatch:Hide(); d.haWatch = nil end
-      if not d.haWatch then d.haWatch = makeCureWatch(d, d.haTypes); d.haWatchSig = sig end
+      if not d.haWatch then
+        if open then d.haWatch = makeCureWatch(d, d.haTypes); d.haWatchSig = sig else waitFor(b) end
+      end
       if d.haWatch then
         d.haWatch:Show()
         if d.haWatchUnit ~= u then d.haWatchUnit = u; pcall(d.haWatch.SetUnit, d.haWatch, u) end
-        sizeSlotButton(d.haWatch, d:GetWidth(), d:GetHeight())
       end
     elseif d.haWatch then d.haWatch:Hide() end
   end
 end
-local function engineOn(b) return L().dispelEngine and engine.ok and b and b.haWatch ~= nil end
+end
+-- the game draws this frame's debuffs (its watcher is set up and showing)
+local function engineOn(b) return L().dispelEngine and engine.ok and b and b.haWatchBtn ~= nil and b.haWatch and b.haWatch:IsShown() end
 S.HealAssistEngine = engine
 
 -- colour / text / which button is needed (in and out of combat, display only)
+local EMPTY = {}       -- (read only: instead of a new {} on every paint)
+local dnames = {}      -- (reused for the debuff names line)
 local function paintDispel(b, u, fake)
   local l = L()
   local deb
-  if not fake and engineOn(b) then
-    if b.dispelText then b.dispelText:SetText("") end
-    for _, d in ipairs(b.haDispel or {}) do
-      if d:IsShown() then pcall(d.SetAlpha, d, 1); d.edge:SetColorTexture(0, 0, 0, 0.9) end
-    end
-    return
-  end
+  local eng = not fake and engineOn(b)
   if fake then deb = fake.debuff and { [fake.debuff] = true } or {}
   else
     local nowT = GetTime()
     if b.haDebDirty or not b.haDebAt or nowT - b.haDebAt > 1 then
       b.haDebDirty, b.haDebAt = nil, nowT
       local d = readDebuffs(u)
-      if d then b.haDeb = d end      -- refused (combat): keep what we saw last
+      if d then b.haDeb = d
+      elseif eng then b.haDeb = nil end -- refused: the game's wash shows it; no stale colour of ours
+      -- (no engine: keep what we saw last)
     end
-    deb = b.haDeb or {}
+    deb = b.haDeb or EMPTY
   end
-  local show, names = nil, {}
+  for i = #dnames, 1, -1 do dnames[i] = nil end
+  local show, names = nil, dnames
   for _, t in ipairs(DTYPES) do
     if deb[t] and (not l.dispelMine or canCure(t)) then
       show = show or t
@@ -1480,11 +1563,11 @@ local function paintDispel(b, u, fake)
   if b.dispelText then
     b.dispelText:SetText((show and l.dispelText) and table.concat(names, " ") or "")
   end
-  for _, d in ipairs(b.haDispel or {}) do
+  for _, d in ipairs(b.haDispel or EMPTY) do
     if d:IsShown() then
       local need
       for _, t in ipairs(DTYPES) do if d.haTypes and d.haTypes[t] and deb[t] then need = need or t end end
-      pcall(d.SetAlpha, d, need and 1 or l.dispelIdle)
+      pcall(d.SetAlpha, d, (need or (eng and not b.haDeb)) and 1 or l.dispelIdle)
       if need then local c = DCOLOR[need]; d.edge:SetColorTexture(c[1], c[2], c[3], 1) else d.edge:SetColorTexture(0, 0, 0, 0.9) end
     end
   end
@@ -1638,10 +1721,12 @@ local function tick()
   tickN = tickN + 1
   mapUnits()
   local clicks = not fight and (tickN % 2 == 1)    -- clicks every 0.3 s, the look every 0.15 s
-  eachKid(function(b)
-    if clicks then updateClicks(b) end
-    paint(b)
-  end)
+  for _, b in ipairs(kids) do                       -- (a plain loop: no new function every tick)
+    if b:IsShown() then
+      if clicks then updateClicks(b) end
+      paint(b)
+    end
+  end
 end
 
 S.HealAssistTick = function() local ok, err = pcall(tick); if not ok and S.report then S.report(err) end return ok, err end
@@ -2051,7 +2136,7 @@ local function refreshRanks()
   dispelCache = nil
   if header and not combat() then applyLayout() end
   curveState.sig = nil
-  if header and not combat() then for _, b in ipairs(kids) do b.haMarkSig = nil; updateClicks(b) end end
+  if header and not combat() then for _, b in ipairs(kids) do b.haMarkSig = nil; b.haZonePre = nil; updateClicks(b) end end
   if S.RefreshHealAssist then S:RefreshHealAssist() end
 end
 S:On("PLAYER_REGEN_DISABLED", function()
@@ -2065,8 +2150,17 @@ S:On("PLAYER_REGEN_ENABLED", function()
   if pending then applyLayout() end
   for _, b in ipairs(kids) do updateClicks(b) end
 end)
+-- these come in bursts (switching specs fires SPELLS_CHANGED many times): one refresh for all of them
+local ranksPending
+local timedRanks = S.PerfWrap and S.PerfWrap("HealAssist  spell ranks refresh", function() refreshRanks() end) or function() refreshRanks() end
+local function ranksSoon()
+  if not C_Timer then refreshRanks() return end
+  if ranksPending then return end
+  ranksPending = true
+  C_Timer.After(0.5, function() ranksPending = nil; timedRanks() end)
+end
 for _, ev in ipairs({ "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_LEVEL_UP" }) do
-  S:On(ev, function() if C_Timer then C_Timer.After(0.5, refreshRanks) else refreshRanks() end end)
+  S:On(ev, ranksSoon)
 end
 -- health changes repaint that frame at once (bar + text + combat badge), in and out of combat
 local function onHealth(_, u)
@@ -2122,7 +2216,7 @@ function S.HealAssistLadder(key)
   b["ctrl|1"] = { kind = "rank", key = key, rank = at(0.5) }
   b["alt|1"] = { kind = "rank", key = key, rank = at(0.75) }
   if CL().combat == "keep" then CL().combat = "max" end
-  if not combat() then for _, x in ipairs(kids) do x.haMarkSig = nil; updateClicks(x) end end
+  if not combat() then for _, x in ipairs(kids) do x.haMarkSig = nil; x.haZonePre = nil; updateClicks(x) end end
   local c = CL().combat
   local fb = (c == "mid" and R.list[ceil(n / 2)]) or (c == "low" and R.list[1]) or R.max
   S:Print(string.format("HealAssist rank ladder for %s: Shift-Left = Rank %d, Ctrl-Left = Rank %d, Alt-Left = Rank %d, Left = exact rank out of combat / Rank %d in combat. The badge shows which click to press.",
@@ -2293,7 +2387,7 @@ end
 local function refreshAll()
   if S.HealAssistLiveHandler then S.HealAssistLiveHandler() end
   curveState.sig = nil
-  if header and not combat() then for _, b in ipairs(kids) do b.haMarkSig = nil; updateClicks(b) end end
+  if header and not combat() then for _, b in ipairs(kids) do b.haMarkSig = nil; b.haZonePre = nil; updateClicks(b) end end
   curveState.sig = nil
 end
 S.HealAssistRefreshAll = function() refreshAll() end
@@ -2843,7 +2937,15 @@ local function buildDispels(p)
     end
     if #all > 0 then lines[#lines + 1] = "|cff888888Not used / not learned: " .. table.concat(all, ", ") .. "|r" end
     local eng = S.HealAssistEngine
-    lines[#lines + 1] = "\n|cffaaaaaaGame-drawn debuffs: " .. ((not L().dispelEngine) and "off" or eng.ok == true and "|cff55ff55working (also in combat)|r" or eng.ok == false and ("|cffff7777not available on this client|r - " .. tostring(eng.why or "")) or "|cffffd100starting...|r") .. "|r"
+    local nWait = 0; for _ in pairs(eng.waiting or {}) do nWait = nWait + 1 end
+    local st
+    if not L().dispelEngine then st = "off"
+    elseif eng.ok == false then st = "|cffff7777not available on this client|r - " .. tostring(eng.why or "")
+    elseif (eng.built or 0) > 0 then st = "|cff55ff55working on " .. eng.built .. " frame(s), also in combat|r" .. (nWait > 0 and (" - " .. nWait .. " waiting") or "")
+    elseif nWait > 0 then st = "|cffffd100waiting: the game hides auras here right now - they're set up once auras are readable (outside the instance / after combat)|r"
+    elseif eng.why then st = "|cffff7777refused|r - " .. tostring(eng.why)
+    else st = "|cffffd100starting...|r" end
+    lines[#lines + 1] = "\n|cffaaaaaaGame-drawn debuffs: " .. st .. "|r"
     self.list:SetText(table.concat(lines, "\n"))
   end
 end

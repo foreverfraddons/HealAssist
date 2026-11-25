@@ -1,4 +1,5 @@
 -- Mock harness for HealAssist.lua (texlua / Lua 5.3)
+wipe = wipe or function(t) for k in pairs(t) do t[k] = nil end return t end
 local errors = 0
 local function check(cond, msg) if not cond then errors = errors + 1; print("FAIL: " .. msg) else print("ok   " .. msg) end end
 

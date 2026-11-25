@@ -1,4 +1,5 @@
 -- Mock harness for HealAssist.lua (texlua / Lua 5.3)
+wipe = wipe or function(t) for k in pairs(t) do t[k] = nil end return t end
 local errors = 0
 local function check(cond, msg) if not cond then errors = errors + 1; print("FAIL: " .. msg) else print("ok   " .. msg) end end
 
@@ -77,12 +78,13 @@ local function newFrame(kind, name, parent, template)
       local btn = newFrame("AuraButton")
       btn.__dispel = {}
       function btn:AddDispelTypeTexture(tx, o) table.insert(self.__dispel, { t = tx, o = o }) end
-      function btn:SetDispelTypeText(fs, o) self.__dtext = fs end
+      function btn:SetAllPoints(rel) self.__allPoints = rel end
       table.insert(self.__kids2, btn)
       if opts and opts.initializeFrame then opts.initializeFrame(btn) end
     end
     function f:GetChildren() return table.unpack(self.__kids2) end
     function f:SetUnit(u) self.__unit = u end
+    function f:SetAuraSlotEnabled() end
   end
   if template == "SecureHandlerBaseTemplate" then
     f.__refs = {}
@@ -196,7 +198,7 @@ S.report = function(e) print("REPORT: " .. tostring(e)) end
 -- load
 local chunk = assert(loadfile(arg[1] or "HealAssist.lua"))
 chunk("CommandCenter", S)
-check(S.rev == 26, "revision line registered")
+check(S.rev == 30, "revision line registered")
 
 listen("LOGIN")
 local header = _G.CC_HealAssistGroup
@@ -642,15 +644,33 @@ fire("PLAYER_REGEN_ENABLED")
 local wc = b.haWatch
 check(wc and wc.__filter == "HARMFUL|RAID_PLAYER_DISPELLABLE" and wc.__unit == "party1", "frame watcher: dispellable filter, pointed at the unit")
 local wb = wc and wc.__kids2[1]
-check(wb and #wb.__dispel == 1 and wb.__dispel[1].o.style == 3 and wb.__dispel[1].o.customDispelColorMap.Poison, "bar wash registered with the game (PreserveAsset + colour map)")
-check(wb and wb.__dtext ~= nil, "type name handed to the game (SetDispelTypeText)")
+check(wb and #wb.__dispel == 2 and wb.__dispel[1].o.style == 3 and wb.__dispel[1].o.customDispelColorMap.Poison, "bar wash registered with the game (PreserveAsset + colour map)")
+check(wb and wb.__dispel[2].o.style == 4 and wb.__dispel[2].o.customDispelAssetMap.Poison.asset:find("DebuffPoison"), "type icon registered with the game (CustomAsset)")
+check(wb and wb.__allPoints == b, "the game's slot button is pinned over the frame (SetAllPoints) - unplaced it never shows")
+check(b.haWatchBtn == wb, "frame marked as drawn by the game")
 local cd = b.haDispel[1]
 local cw = cd and cd.haWatch
 local cmap = cw and cw.__kids2[1] and cw.__kids2[1].__dispel[1].o.customDispelColorMap
 check(cmap and cmap.Poison and cmap.Curse, "cure button watcher made")
 check(cmap and (cmap.Curse.r or cmap.Curse[1] or 0) == 0, "types that button can't cure are black (invisible on ADD)")
+auras.party1 = { { dispelName = "Poison" } }; b.haDebDirty = true
 S.HealAssistTick()
-check(b.dispelText.__text == "", "own text steps aside when the game draws it")
+check(b.dispelText.__text ~= "", "own colour / text still shown whenever the game lets us read debuffs")
+-- in combat (reading refused): no stale colour of ours, the game's wash shows it
+inCombat = true; b.haDebDirty = true; S.HealAssistTick()
+check(b.dispelText.__text == "", "in combat with the game drawing: no stale text of ours")
+inCombat = false
+-- auras hidden (inside an instance): set up waits until they're readable
+C_Secrets = { ShouldAurasBeSecret = function() return true end }
+local b2 = header.__kids[3]
+b2.haWatch, b2.haWatchBtn = nil, nil
+S.HealAssistAuraWatch(b2)
+check(b2.haWatch == nil and S.HealAssistEngine.waiting[b2], "auras secret: no watcher yet, waiting")
+C_Secrets = { ShouldAurasBeSecret = function() return false end }
+fire("PLAYER_REGEN_ENABLED")
+S.HealAssistAuraWatch(b2)
+check(b2.haWatch ~= nil and b2.haWatchBtn ~= nil, "built once auras are readable")
+C_Secrets = nil
 fire("PLAYER_REGEN_ENABLED")
 check(header.__attr.columnSpacing == 4 + 19, "columns spaced for the outside buttons: " .. tostring(header.__attr.columnSpacing))
 print(errors == 0 and "ALL PASSED" or (errors .. " FAILED"))
